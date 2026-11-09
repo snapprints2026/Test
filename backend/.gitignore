@@ -1,0 +1,12 @@
+node_modules/
+
+# Secrets — never commit
+.env
+.env.*
+*.env
+!.env.example
+
+# Local testing files
+local-storage/
+kiosk-sim-prints/
+.kiosk-sim.json

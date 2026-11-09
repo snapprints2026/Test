@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+# build output
+print-app/build/
+dashboard/dist/

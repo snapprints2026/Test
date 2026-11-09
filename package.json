@@ -1,0 +1,16 @@
+{
+  "name": "snapprints",
+  "private": true,
+  "description": "SnapPrints \u2014 backend, customer print page, admin/vendor/officer dashboard, shop print agent and Raspberry Pi kiosk in one project",
+  "scripts": {
+    "install:all": "npm install && npm --prefix backend install && npm --prefix print-app install && npm --prefix dashboard install && npm --prefix shop-agent install",
+    "db:setup": "npm --prefix backend run migrate && npm --prefix backend run seed:dev",
+    "dev": "concurrently -n api,print,dash -c blue,green,magenta \"npm --prefix backend run dev\" \"npm --prefix print-app start\" \"npm --prefix dashboard run dev\"",
+    "agent:setup": "npm --prefix shop-agent run setup",
+    "agent": "npm --prefix shop-agent start",
+    "kiosk:sim": "npm --prefix backend run kiosk:sim --"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
