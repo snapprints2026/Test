@@ -960,9 +960,11 @@ exports.getWithdrawals = async (req, res) => {
     if (status) { where = "WHERE w.status=?"; params.push(status); }
 
     const [rows] = await db.query(`
-      SELECT w.*, v.full_name AS vendor_name, v.email AS vendor_email
+      SELECT w.*, v.full_name AS vendor_name, v.email AS vendor_email,
+             b.bank_name, b.account_number, b.ifsc, b.verified AS bank_verified, b.changed_at AS bank_changed_at
       FROM withdrawals w
       JOIN vendors v ON v.id = w.vendor_id
+      LEFT JOIN bank_accounts b ON b.vendor_id = w.vendor_id
       ${where}
       ORDER BY w.requested_at DESC
     `, params);
@@ -993,6 +995,21 @@ exports.updateWithdrawalStatus = async (req, res) => {
       await connection.rollback();
       return res.status(404).json({ error: "Withdrawal not found" });
     }
+    // Only these steps: PENDING → APPROVED / REJECTED, APPROVED → PAID / REJECTED.
+    // (Stops a withdrawal being marked PAID twice.)
+    const NEXT = { PENDING: ["APPROVED", "REJECTED"], APPROVED: ["PAID", "REJECTED"] };
+    if (!(NEXT[withdrawal.status] || []).includes(status)) {
+      await connection.rollback();
+      return res.status(409).json({ error: `Withdrawal is ${withdrawal.status} — it can't be changed to ${status}` });
+    }
+    // Money only goes to a bank account an admin has checked.
+    if (status !== "REJECTED") {
+      const [[bank]] = await connection.query(`SELECT verified FROM bank_accounts WHERE vendor_id=?`, [withdrawal.vendor_id]);
+      if (!bank || !bank.verified) {
+        await connection.rollback();
+        return res.status(409).json({ error: "The vendor's bank account is not verified yet. Verify it on the vendor's page first." });
+      }
+    }
 
     await connection.query(
       `UPDATE withdrawals
@@ -1018,6 +1035,31 @@ exports.updateWithdrawalStatus = async (req, res) => {
     res.status(500).json({ error: "Failed to update withdrawal" });
   } finally {
     connection.release();
+  }
+};
+
+/* ===========================
+   PATCH /api/admin/vendors/:vendorId/bank-account   { verified: true|false }
+   An admin checks the vendor's bank details (e.g. a cancelled cheque or a
+   ₹1 test transfer) and marks them verified. Withdrawals can only be approved
+   or paid to a verified account. Needs the admin's password.
+=========================== */
+exports.verifyBankAccount = async (req, res) => {
+  try {
+    const verified = req.body.verified === true || req.body.verified === "true";
+    const [[bank]] = await db.query(`SELECT * FROM bank_accounts WHERE vendor_id=?`, [req.params.vendorId]);
+    if (!bank) return res.status(404).json({ error: "This vendor has not added a bank account" });
+    await db.query(
+      `UPDATE bank_accounts SET verified=?, verified_at=IF(?, NOW(), NULL), verified_by=IF(?, ?, NULL) WHERE id=?`,
+      [verified ? 1 : 0, verified, verified, req.staff.id, bank.id]
+    );
+    await audit(req, verified ? "BANK_ACCOUNT_VERIFIED" : "BANK_ACCOUNT_UNVERIFIED", {
+      details: { vendorId: Number(req.params.vendorId), bank: bank.bank_name, account: `••••${String(bank.account_number).slice(-4)}`, ifsc: bank.ifsc },
+    });
+    res.json({ success: true, verified });
+  } catch (err) {
+    console.error("VERIFY BANK ERROR:", err);
+    res.status(500).json({ error: "Could not update bank account" });
   }
 };
 
@@ -1312,10 +1354,26 @@ exports.updatePrinter = async (req, res) => {
 };
 
 /* PATCH /api/admin/vendors/:vendorId   { allowedModules?, status? } */
+/* For the audit log: { column: { from, to } } for every "col=?" in an UPDATE.
+   Passwords are recorded only as "changed". */
+function changesFrom(before, sets, params) {
+  const out = {};
+  let i = 0;
+  for (const s of sets) {
+    if (!s.endsWith("=?")) continue;
+    const col = s.slice(0, -2);
+    const to = params[i++];
+    if (col === "password_hash") { out.password = "changed"; continue; }
+    const from = before[col] === undefined ? null : before[col];
+    if (String(from ?? "") !== String(to ?? "")) out[col] = { from, to };
+  }
+  return out;
+}
+
 exports.updateVendor = async (req, res) => {
   try {
     const { vendorId } = req.params;
-    const [[vendor]] = await db.query(`SELECT id FROM vendors WHERE id=?`, [vendorId]);
+    const [[vendor]] = await db.query(`SELECT * FROM vendors WHERE id=?`, [vendorId]);
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
     const sets = [];
@@ -1360,10 +1418,11 @@ exports.updateVendor = async (req, res) => {
       if (String(req.body.password).length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
       sets.push("password_hash=?");
       params.push(await bcrypt.hash(String(req.body.password), 10));
+      sets.push("token_version=token_version+1"); // logs the vendor out everywhere
     }
     if (!sets.length) return res.json({ success: true });
     await db.query(`UPDATE vendors SET ${sets.join(", ")} WHERE id=?`, [...params, vendorId]);
-    await audit(req, "VENDOR_UPDATED", { details: { vendorId: Number(vendorId), fields: Object.keys(req.body).filter((k) => k !== "password") } });
+    await audit(req, "VENDOR_UPDATED", { details: { vendorId: Number(vendorId), changes: changesFrom(vendor, sets, params) } });
     res.json({ success: true });
   } catch (err) {
     console.error("UPDATE VENDOR ERROR:", err);
@@ -1399,7 +1458,7 @@ exports.createAdminUser = async (req, res) => {
       `INSERT INTO admin_users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, 'ACTIVE')`,
       [String(name).trim(), clean, await bcrypt.hash(String(password), 10), r]
     );
-    await audit(req, "ADMIN_USER_CREATED", { details: { adminId: result.insertId, role: r } });
+    await audit(req, "ADMIN_USER_CREATED", { details: { adminId: result.insertId, email: clean, role: r } });
     res.json({ success: true, id: result.insertId });
   } catch (err) {
     console.error("CREATE ADMIN USER ERROR:", err);
@@ -1410,8 +1469,12 @@ exports.createAdminUser = async (req, res) => {
 exports.updateAdminUser = async (req, res) => {
   try {
     const id = Number(req.params.adminId);
-    const [[target]] = await db.query(`SELECT id, role FROM admin_users WHERE id=?`, [id]);
+    const [[target]] = await db.query(`SELECT id, email, role, status FROM admin_users WHERE id=?`, [id]);
     if (!target) return res.status(404).json({ error: "Admin user not found" });
+    // Nobody changes their own role or switches themselves off — another SUPER_ADMIN must do it.
+    if (id === Number(req.staff.id) && (req.body.role !== undefined || req.body.status !== undefined)) {
+      return res.status(403).json({ error: "You can't change your own role or status. Ask another SUPER_ADMIN." });
+    }
     const sets = [];
     const params = [];
     if (req.body.role !== undefined) {
@@ -1425,6 +1488,7 @@ exports.updateAdminUser = async (req, res) => {
     if (req.body.password) {
       if (String(req.body.password).length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
       sets.push("password_hash=?"); params.push(await bcrypt.hash(String(req.body.password), 10));
+      sets.push("token_version=token_version+1"); // logs them out everywhere
     }
     if (!sets.length) return res.json({ success: true });
     // Never lock everyone out
@@ -1434,7 +1498,7 @@ exports.updateAdminUser = async (req, res) => {
       if (!n.n) return res.status(400).json({ error: "Keep at least one active SUPER_ADMIN" });
     }
     await db.query(`UPDATE admin_users SET ${sets.join(", ")} WHERE id=?`, [...params, id]);
-    await audit(req, "ADMIN_USER_UPDATED", { details: { adminId: id, role: req.body.role, status: req.body.status, password: !!req.body.password } });
+    await audit(req, "ADMIN_USER_UPDATED", { details: { adminId: id, email: target.email, changes: changesFrom(target, sets, params) } });
     res.json({ success: true });
   } catch (err) {
     console.error("UPDATE ADMIN USER ERROR:", err);

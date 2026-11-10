@@ -1,5 +1,6 @@
 // controllers/vendor.controller.js
 const db = require("../database/db");
+const { logAudit } = require("../services/audit.service");
 const machines = require("../services/machine.service");
 const { getIO, machineRoom } = require("../socket/socket");
 
@@ -163,22 +164,36 @@ exports.upsertBankAccount = async (req, res) => {
       return res.status(400).json({ error: "accountType must be SAVINGS or CURRENT" });
     }
 
-    const [[existing]] = await db.query(`SELECT id FROM bank_accounts WHERE vendor_id=?`, [req.staff.id]);
+    const [[existing]] = await db.query(`SELECT * FROM bank_accounts WHERE vendor_id=?`, [req.staff.id]);
+    const actor = { type: "VENDOR", id: req.staff.id, ip: req.ip };
+    const masked = `••••${String(accountNumber).slice(-4)}`;
 
     if (existing) {
+      // Changing who gets the money (holder / number / IFSC) needs an admin to verify again.
+      const moneyChanged = existing.account_holder !== accountHolder
+        || existing.account_number !== String(accountNumber) || existing.ifsc !== ifsc;
       await db.query(
         `UPDATE bank_accounts
-         SET bank_name=?, account_holder=?, account_number=?, ifsc=?, branch_name=?, account_type=?, verified=0
+         SET bank_name=?, account_holder=?, account_number=?, ifsc=?, branch_name=?, account_type=?,
+             verified=IF(?, 0, verified), verified_at=IF(?, NULL, verified_at), verified_by=IF(?, NULL, verified_by),
+             changed_at=IF(?, NOW(), changed_at)
          WHERE id=?`,
-        [bankName, accountHolder, accountNumber, ifsc, branchName || null, accountType, existing.id]
+        [bankName, accountHolder, accountNumber, ifsc, branchName || null, accountType,
+          moneyChanged, moneyChanged, moneyChanged, moneyChanged, existing.id]
       );
+      if (moneyChanged) {
+        await logAudit(null, null, "BANK_ACCOUNT_CHANGED", {
+          vendorId: req.staff.id, from: `••••${String(existing.account_number).slice(-4)} ${existing.ifsc}`, to: `${masked} ${ifsc}`,
+        }, actor);
+      }
     } else {
       await db.query(
         `INSERT INTO bank_accounts
-         (vendor_id, bank_name, account_holder, account_number, ifsc, branch_name, account_type, verified)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+         (vendor_id, bank_name, account_holder, account_number, ifsc, branch_name, account_type, verified, changed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
         [req.staff.id, bankName, accountHolder, accountNumber, ifsc, branchName || null, accountType]
       );
+      await logAudit(null, null, "BANK_ACCOUNT_ADDED", { vendorId: req.staff.id, account: `${masked} ${ifsc}` }, actor);
     }
 
     res.json({ success: true });
@@ -259,8 +274,11 @@ exports.requestWithdrawal = async (req, res) => {
     const amt = Number(req.body.amount);
     if (!amt || amt <= 0) return res.status(400).json({ error: "Enter a valid amount" });
 
-    const [[bank]] = await db.query(`SELECT id FROM bank_accounts WHERE vendor_id=?`, [req.staff.id]);
+    const [[bank]] = await db.query(`SELECT id, verified FROM bank_accounts WHERE vendor_id=?`, [req.staff.id]);
     if (!bank) return res.status(400).json({ error: "Add your bank details before requesting a withdrawal" });
+    if (!bank.verified) {
+      return res.status(400).json({ error: "Your bank account is waiting for SnapPrints to verify it. You can request a withdrawal once it's verified." });
+    }
 
     const { available } = await computeBalance(req.staff.id);
     if (amt > available) {

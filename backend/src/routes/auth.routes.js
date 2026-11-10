@@ -9,6 +9,7 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
+const env = require("../config/env");
 const crypto = require("crypto");
 const router = express.Router();
 const db = require("../database/db");
@@ -55,8 +56,8 @@ router.post("/admin/login", staffLimit, async (req, res) => {
     await db.query(`UPDATE admin_users SET last_login_at=NOW() WHERE id=?`, [admin.id]);
     await logAudit(null, null, "ADMIN_LOGIN", null, { type: "ADMIN", id: admin.id, ip: req.ip });
     const token = jwt.sign(
-      { id: admin.id, role: "admin", name: admin.name, email: admin.email },
-      process.env.JWT_SECRET, { expiresIn: "7d" }
+      { id: admin.id, role: "admin", name: admin.name, email: admin.email, tv: admin.token_version || 0 },
+      process.env.JWT_SECRET, { expiresIn: `${env.ADMIN_SESSION_HOURS}h` }
     );
     res.json({ token, user: { id: admin.id, name: admin.name, email: admin.email, role: "admin", adminRole: admin.role } });
   } catch (err) {
@@ -76,7 +77,7 @@ router.post("/vendor/login", staffLimit, async (req, res) => {
 
     await logAudit(null, null, "VENDOR_LOGIN", null, { type: "VENDOR", id: vendor.id, ip: req.ip });
     const token = jwt.sign(
-      { id: vendor.id, role: "vendor", name: vendor.full_name, email: vendor.email },
+      { id: vendor.id, role: "vendor", name: vendor.full_name, email: vendor.email, tv: vendor.token_version || 0 },
       process.env.JWT_SECRET, { expiresIn: "7d" }
     );
     res.json({
@@ -106,7 +107,7 @@ router.post("/officer/login", staffLimit, async (req, res) => {
     await db.query(`UPDATE officers SET last_login_at=NOW() WHERE id=?`, [officer.id]);
     await logAudit(null, null, "OFFICER_LOGIN", null, { type: "OFFICER", id: officer.id, ip: req.ip });
     const token = jwt.sign(
-      { id: officer.id, role: "officer", name: officer.name, email: officer.email },
+      { id: officer.id, role: "officer", name: officer.name, email: officer.email, tv: officer.token_version || 0 },
       process.env.JWT_SECRET, { expiresIn: "7d" }
     );
     res.json({

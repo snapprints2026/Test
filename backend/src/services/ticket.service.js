@@ -102,7 +102,7 @@ async function getTicket(ticketId) {
 }
 
 /* filter: { status, machineIds, orgIds, onlyMachinesOrOrgs, limit } */
-async function listTickets({ status, machineIds, orgIds, limit = 200 } = {}) {
+async function listTickets({ status, machineIds, orgIds, raisedBy, limit = 200 } = {}) {
   const where = [];
   const params = [];
   if (status === "ACTIVE") where.push("t.status NOT IN ('RESOLVED','CLOSED')");
@@ -110,6 +110,8 @@ async function listTickets({ status, machineIds, orgIds, limit = 200 } = {}) {
   const scope = [];
   if (machineIds) { scope.push(machineIds.length ? "t.machine_id IN (?)" : "FALSE"); if (machineIds.length) params.push(machineIds); }
   if (orgIds) { scope.push(orgIds.length ? "t.organization_id IN (?)" : "FALSE"); if (orgIds.length) params.push(orgIds); }
+  // …plus tickets this person raised themselves (e.g. a vendor's general question with no machine)
+  if (raisedBy) { scope.push("(t.raised_by_type=? AND t.raised_by_id=?)"); params.push(raisedBy.type, raisedBy.id); }
   if (scope.length) where.push(`(${scope.join(" OR ")})`);
   const [rows] = await db.query(
     `SELECT t.id, t.ticket_no, t.machine_id, m.name AS machine_name, t.organization_id, o.name AS org_name,

@@ -13,7 +13,7 @@ async function scopeFor(req) {
   if (req.staff.role === "admin") return {};
   if (req.staff.role === "vendor") {
     const [rows] = await db.query(`SELECT machine_id FROM machines WHERE owner_vendor_id=?`, [req.staff.id]);
-    return { machineIds: rows.map((r) => r.machine_id) };
+    return { machineIds: rows.map((r) => r.machine_id), raisedBy: { type: "VENDOR", id: req.staff.id } };
   }
   const orgIds = req.staff.orgIds || [];
   const [rows] = orgIds.length
@@ -25,7 +25,8 @@ async function scopeFor(req) {
 async function canSee(req, ticket) {
   if (req.staff.role === "admin") return true;
   const s = await scopeFor(req);
-  return (s.machineIds || []).includes(ticket.machine_id) || (s.orgIds || []).includes(ticket.organization_id);
+  return (s.machineIds || []).includes(ticket.machine_id) || (s.orgIds || []).includes(ticket.organization_id)
+    || (!!s.raisedBy && ticket.raised_by_type === s.raisedBy.type && Number(ticket.raised_by_id) === Number(s.raisedBy.id));
 }
 
 /* GET …/tickets?status=ACTIVE|OPEN|… */
@@ -82,7 +83,8 @@ exports.create = async (req, res) => {
 };
 
 /* POST …/tickets/:ticketId/updates  { message?, status? }  (+ admin: priority, assignedTo, resolutionNotes)
-   Officers can comment and close / reopen their own tickets; vendors and admins can change any status. */
+   Officers can comment and close / reopen their own tickets; vendors can only reply;
+   admins can change any status. */
 exports.update = async (req, res) => {
   try {
     const id = Number(req.params.ticketId);
@@ -91,6 +93,9 @@ exports.update = async (req, res) => {
     const b = req.body;
     if (req.staff.role === "officer" && b.status && !["CLOSED", "OPEN"].includes(b.status))
       return fail(res, 403, "Officers can close or reopen a ticket");
+    // Vendors raise tickets and reply; only SnapPrints admins change the status.
+    if (req.staff.role === "vendor" && b.status)
+      return fail(res, 403, "Only SnapPrints can change a ticket's status. Add a reply instead.");
     const extra = req.staff.role === "admin"
       ? { priority: b.priority, assignedTo: b.assignedTo, resolutionNotes: b.resolutionNotes }
       : {};

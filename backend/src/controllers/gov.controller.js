@@ -206,6 +206,7 @@ exports.updateOfficer = async (req, res) => {
     if (b.password) {
       if (String(b.password).length < 8) return fail(res, 400, "Password must be at least 8 characters");
       sets.push("password_hash=?"); params.push(await bcrypt.hash(String(b.password), 10));
+      sets.push("token_version=token_version+1"); // logs the officer out everywhere
     }
     if (!sets.length) return res.json({ success: true });
     const [r] = await db.query(`UPDATE officers SET ${sets.join(", ")} WHERE id=?`, [...params, id]);

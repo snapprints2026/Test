@@ -13,7 +13,7 @@ function dbConfig() {
     host,
     user: process.env.DB_USER || process.env.MYSQLUSER || "root",
     password: process.env.DB_PASSWORD || process.env.MYSQLPASSWORD || "",
-    database: process.env.DB_NAME || process.env.MYSQLDATABASE,
+    database: process.env.DB_NAME || process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || "railway",
     port: parseInt(process.env.DB_PORT || process.env.MYSQLPORT || "3306", 10),
     ssl: useSsl ? { rejectUnauthorized: false } : undefined,
     // Store and read every DATETIME as UTC, whatever time zone the MySQL server

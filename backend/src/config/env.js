@@ -70,6 +70,8 @@ const env = {
 
   // Customers can report a problem with a paid order for this long.
   ISSUE_REPORT_WINDOW_HOURS: parseInt(process.env.ISSUE_REPORT_WINDOW_HOURS || "48", 10),
+  // How long an admin stays logged in (hours). Vendors and officers stay 7 days.
+  ADMIN_SESSION_HOURS: Math.max(1, parseInt(process.env.ADMIN_SESSION_HOURS || "12", 10) || 12),
 
   /* ── Document conversion ──
      Word/text/image uploads are converted to PDF so every printer gets a PDF

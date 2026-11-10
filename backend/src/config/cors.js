@@ -7,10 +7,9 @@ const allowedOrigins = [
   "https://www.snapprints.in",
   "https://snapprints.in",
   "https://upload.snapprints.in",
-  "https://snap-prints.vercel.app",
-  "https://snapprints-eight.vercel.app",
-  "https://snapprints-portfolio-dheg.vercel.app", // live dashboard
-  "https://snapprints-frontend.vercel.app",       // live print page
+  "https://snapprintsfrontenddemo.vercel.app/", 
+  "https://snapprintsdashboarddemo.vercel.app/",
+
 ];
 
 function isAllowedOrigin(origin) {

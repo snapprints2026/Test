@@ -3,6 +3,7 @@
 //   admin   — SnapPrints staff. Role (SUPER_ADMIN / ADMIN / FINANCE / SUPPORT)
 //             and status are read from the database on every request, so a
 //             role change or deactivation takes effect immediately.
+//             A password reset logs the person out everywhere (token_version).
 //   vendor  — machine operators
 //   officer — read-only department logins, scoped to their organisation tree
 const jwt = require("jsonwebtoken");
@@ -15,6 +16,10 @@ function readToken(req) {
   const authHeader = req.headers.authorization || "";
   return authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 }
+
+/* A login made before the last password reset no longer works.
+   (token "tv" = the account's token_version when they logged in.) */
+const stale = (decoded, row) => Number(decoded.tv || 0) !== Number(row.token_version || 0);
 
 function verifyStaffToken(requiredRole) {
   return async (req, res, next) => {
@@ -33,17 +38,20 @@ function verifyStaffToken(requiredRole) {
 
     try {
       if (decoded.role === "admin") {
-        const [[a]] = await db.query(`SELECT role, status FROM admin_users WHERE id=?`, [decoded.id]);
+        const [[a]] = await db.query(`SELECT role, status, token_version FROM admin_users WHERE id=?`, [decoded.id]);
         if (!a || a.status !== "ACTIVE") return res.status(401).json({ error: "Account disabled" });
+        if (stale(decoded, a)) return res.status(401).json({ error: "Password was changed — please log in again" });
         req.staff.adminRole = a.role;
       } else if (decoded.role === "officer") {
-        const [[o]] = await db.query(`SELECT organization_id, status FROM officers WHERE id=?`, [decoded.id]);
+        const [[o]] = await db.query(`SELECT organization_id, status, token_version FROM officers WHERE id=?`, [decoded.id]);
         if (!o || o.status !== "ACTIVE") return res.status(401).json({ error: "Account disabled" });
+        if (stale(decoded, o)) return res.status(401).json({ error: "Password was changed — please log in again" });
         req.staff.organizationId = o.organization_id;
         req.staff.orgIds = await descendantIds(o.organization_id);
       } else if (decoded.role === "vendor") {
-        const [[v]] = await db.query(`SELECT status FROM vendors WHERE id=?`, [decoded.id]);
+        const [[v]] = await db.query(`SELECT status, token_version FROM vendors WHERE id=?`, [decoded.id]);
         if (!v || v.status !== "ACTIVE") return res.status(401).json({ error: "Account disabled" });
+        if (stale(decoded, v)) return res.status(401).json({ error: "Password was changed — please log in again" });
       }
     } catch (err) {
       console.error("STAFF AUTH ERROR:", err.message);
